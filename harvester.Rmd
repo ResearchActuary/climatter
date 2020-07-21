@@ -1,0 +1,185 @@
+---
+title: "ERA-5 data harvester"
+---
+
+```{r include = FALSE}
+library(tidyverse)
+library(ecmwfr)
+library(ncdf4)
+```
+
+# Establish time range
+
+The function below will create a data frame which houses a set of dates for extraction. Storing this in a data frame is overkill. Earlier I'd had some additional columns which I decided I didn't need. This structure will allow us to introduce some later if the mood strikes us.
+
+```{r}
+create_tracker_table <- function(months = 1:12, days = 1:31, years = 1981:2020) {
+
+  tbl_requests <- crossing(
+    month = months
+    , day = days
+    , year = years
+    ) %>% 
+    mutate(
+      date = lubridate::make_date(year, month, day)
+    ) %>% 
+    filter(
+      !is.na(date)
+    ) %>% 
+    select(-year, -month, -day)
+  
+}
+```
+
+# Download a single file
+
+This will download a single `nc` file. At the moment, it's hard-wired to pull down temperature at 2 meters. We'll look into flexing that.
+
+```{r}
+download_one_file <- function(user_name, date_in, save_path = "data") {
+  
+  my_request <- list(
+    dataset_short_name = "reanalysis-era5-land"
+    , variable = "2m_temperature"
+    , year = lubridate::year(date_in)
+    , month = lubridate::month(date_in)
+    , day = lubridate::day(date_in)
+    , time = c("12:00")
+    , area = c(90, -172, 24, -52)
+    , format = "netcdf"
+    , target = paste(date_in, "2m-temperature.nc", sep = "-")
+  )
+  
+  wf_request(
+    user = user_name
+    , request = my_request   
+    , transfer = TRUE  
+    , path = save_path
+    , verbose = FALSE
+  )
+}
+```
+
+The file extract function will process a single `nc` file. Again, the variable of interest is (semi) hard-wired. The function is fragile in that it presumes consistency between the data in the file and the date associated with it.
+
+```{r}
+extract_one_file <- function(file_in, date_in, variable = "t2m", delete_source = TRUE) {
+  
+  if (length(date_in) > 1) {
+    stop("I can only extract one day at a time")
+  }
+  
+  nc_data <- nc_open(file_in)
+  
+  lon <- ncvar_get(nc_data, "longitude")
+  lat <- ncvar_get(nc_data, "latitude")
+  temperature <- ncvar_get(nc_data, variable)
+
+  nc_close(nc_data)
+  if (delete_source) unlink(file_in)
+  
+  colnames(temperature) <- lat
+  rownames(temperature) <- lon
+  tbl_out <- as_tibble(temperature, rownames = "lon") %>% 
+    pivot_longer(cols = -lon, names_to = 'lat', values_to = 'temperature') %>% 
+    filter(!is.na(temperature)) %>% 
+    mutate(
+      lon = as.double(lon)
+      , lat = as.double(lat)
+      , date = date_in
+    )
+
+}
+```
+
+This function will reduce the geographic resolution of the data. Based on conversation with other researchers, this function will be modified to process a day with observations at every hour. We would then pick the maximum and minimum across 24 hours. We will also consider simply filtering out data points, rather than rounding the longitude and latitude.
+
+```{r}
+trim_grid <- function(tbl_in, accuracy = 1) {
+  
+  tbl_in %>% 
+    mutate(
+      lon = plyr::round_any(lon, accuracy)
+      , lat = plyr::round_any(lat, accuracy)
+    ) %>% 
+    group_by(lon, lat, date) %>% 
+    summarise_at(
+      vars(temperature)
+      , list(mean = mean, median = median, min = min, max = max)
+      , na.rm = TRUE
+    )
+  
+}
+```
+
+# All together now
+
+First, create the tracker file if it doesn't exist. For now, this is ad hoc to fetch one or two years at a time.
+
+```{r}
+tbl_tracker <- create_tracker_table(
+  months = 1:12
+  , years = 1982
+)
+```
+
+Now, we open up the output file and filter on everything which hasn't been downloaded and extracted yet. Note that we're checking for the existence of the output file. This is pretty general and could support options to store all the data from a single year into a particular file. Simply change the name.
+
+```{r}
+file_out <- file.path("data", "out.csv")
+
+if (file.exists(file_out)) {
+  tbl_written <- read_csv(file_out) %>% 
+    select(date) %>% 
+    unique()
+  
+  tbl_unwritten <- tbl_tracker %>% 
+    anti_join(tbl_written, by = "date")
+  
+} else {
+  tbl_unwritten <- tbl_tracker %>% 
+    select(date)
+}
+
+```
+
+We'll cheat slightly and use a `for` loop to churn through each day. This is fine, performance-wise as it's unlikely to be able to parallelize the remote calls. We've set a maximum file size. This isn't super necessary. It's just there as a circuit breaker in case something weird happens.
+
+Because I'm putting this on GitHub, I'm storing my CDS user name in an environment variable. That sits in the .Renviron file which lives at user root.
+
+```{r }
+max_file_out_size <- 200e6
+for (i_date in seq_len(nrow(tbl_unwritten))) {
+  
+  if (file.exists(file_out) & file.size(file_out) > max_file_out_size) break
+
+  a_file <- download_one_file(Sys.getenv('CDS_USER_NAME'), tbl_unwritten$date[i_date])
+  
+  tbl_extract <- a_file %>% 
+    extract_one_file(tbl_unwritten$date[i_date])
+
+  tbl_extract <- tbl_extract %>% 
+    trim_grid()
+  
+  if (file.exists(file_out)) {
+    tbl_extract %>%
+      write_csv(path = file_out, append = TRUE, col_names = FALSE)
+  } else {
+    tbl_extract %>%
+      write_csv(path = file_out, append = FALSE, col_names = TRUE)
+  }
+  
+  
+}
+```
+
+This is a code snippet which plotted temperature. Hangning on to it so that I don't need to think any more than I have to.
+
+```{r eval = FALSE}
+tbl_one_file %>% 
+  trim_grid(accuracy = 1) %>% 
+  ggplot(aes(lon, lat)) + 
+  geom_point(aes(color = mean)) + 
+  scale_color_gradient(low = "blue", high = "red") + 
+  theme_minimal()
+```
