@@ -27,6 +27,11 @@ cds_to_datetime <- function(x){
     as.POSIXct(origin = "1900-01-01 00:00:00")
 }
 
+#' add_date_time
+#' 
+#' @importFrom dplyr mutate
+#'
+#' @export
 add_date_time <- function(tbl_in) {
   
   tbl_in %>% 

@@ -1,0 +1,154 @@
+---
+title: Example of dowload from ECMWFR
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{climatter}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(climatter)
+library(magrittr)
+```
+
+This is a short demo which illustrates how to pull data from INSERT_NAME_HERE.
+
+# Download a single file
+
+The file extract function will process a single `nc` file. We can pass in multiple variables, if we like. For this example, we'll pull the temperature at 2 metres. We'll use the default output directory, which is a subfolder called "data". The name of the file will be based on the date.
+
+This presumes that you've signed up for an account from ECMWF. My username is saved as an environment variable.
+
+```{r}
+a_file <- download_one_file(
+    Sys.getenv('CDS_USER_NAME')
+    , as.Date("1982-01-01")
+    , c('2m_temperature')
+  )
+
+a_file
+```
+
+This function will reduce the geographic resolution of the data. Based on conversation with other researchers, this function will be modified to process a day with observations at every hour. We would then pick the maximum and minimum across 24 hours. We will also consider simply filtering out data points, rather than rounding the longitude and latitude.
+
+# Extract a table
+
+The extraction function relies on the `tidync` package. That package may be used if one wants to perform different operations on the data within the NC file, or would like to pull different data elements out.
+
+```{r}
+tbl_extract <- a_file %>% 
+  extract_one_file()
+```
+
+Note that the table which emerges is pretty massive. There are several million rows for a single day, for a single variable.
+
+```{r }
+dim(tbl_extract)
+object.size(tbl_extract) %>% 
+  as.double() %>% 
+  format(big.mark = ",")
+```
+
+The latitude and longitude values are resolved to within one tenth of a degree.
+
+```{r}
+tbl_extract$latitude %>% 
+  unique() %>% 
+  sort() %>% 
+  head()
+
+tbl_extract$longitude %>% 
+  unique() %>% 
+  sort() %>% 
+  head()
+```
+
+# Trim the grid
+
+To make our lives a bit easier, we will trim the geographic resolution, so that we only have points at integral values. This will reduce the size by 90%
+
+```{r }
+tbl_extract_coarse <- tbl_extract %>% 
+  trim_grid()
+
+tbl_extract_coarse %>% 
+  dim()
+
+tbl_extract_coarse %>% 
+  object.size() %>% 
+  as.double() %>% 
+  format(big.mark = ",")
+```
+
+We can actually make that coarser, if we override the defaults.
+
+```{r}
+tbl_extract_fine <- tbl_extract %>% 
+  trim_grid(lat_gran = .5, lon_gran = .5)
+
+tbl_extract_fine %>% 
+  dim()
+
+tbl_extract_fine %>% 
+  object.size() %>% 
+  as.double() %>% 
+  format(big.mark = ",")
+```
+
+# Dates and times
+
+The data which comes back from ECWDF marks time as the number of hours after January 1, 1900. The `add_date_time()` function will convert this to a POSIX datetime and also a date. The original column is preserved.
+
+```{r }
+tbl_extract_coarse <- tbl_extract_coarse %>% 
+  add_date_time()
+```
+
+```{r echo = FALSE}
+tbl_extract_coarse %>% 
+  head() %>% 
+  knitr::kable()
+```
+
+# Summarize across a day
+
+Finally, we can summarize the data across a single 24 hour period. The aggregation functions are hard-wired to be `max()`, `min()`, `mean()` and `median()`. If only a single variable is present, the column names will correspond to the aggregation functions. If more than one variable exists, all will be summarized and column names will follow naming conventions described in `dplyr` documentation.
+
+```{r }
+tbl_extract_coarse <- tbl_extract_coarse %>% 
+  summarize_day()
+```
+
+The size of the object is very much reduced, making it straighforward to save to .CSV. Combining many days will obviously increase the overall file size, but the results should be tolerable.
+
+```{r }
+tbl_extract_coarse %>% 
+  dim()
+
+tbl_extract_coarse %>% 
+  object.size() %>% 
+  as.double() %>% 
+  format(big.mark = ",")
+
+```
+
+Hey, how about a picture?
+
+```{r}
+library(ggplot2)
+
+tbl_extract_coarse %>% 
+  ggplot(aes(longitude, latitude)) + 
+  geom_point(aes(color = mean)) + 
+  scale_color_gradient(low = "blue", high = "red") + 
+  theme_minimal()
+```
+

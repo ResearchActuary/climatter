@@ -54,6 +54,7 @@ download_one_file <- function(user_name, date_in, variables_in, save_path = "dat
 #' @return A tibble (data frame) of the contents
 #' 
 #' @importFrom tidync tidync
+#' @importFrom tidync hyper_tibble
 #' @importFrom magrittr %>%
 #' @importFrom dplyr rename
 #' 
