@@ -69,6 +69,19 @@ summarize_day <- function(tbl_in) {
   
 }
 
+#' create_tracker_table
+#' 
+#' @param months integer vector of months
+#' @param days integer vector of days
+#' @param years integer vector of years
+#' 
+#' @return Data frame with a date. Not a lot to see here.
+#' 
+#' @importFrom lubridate make_date
+#' @importFrom tidyr crossing
+#' @importFrom dplyr select
+#' 
+#' @export
 create_tracker_table <- function(months = 1:12, days = 1:31, years = 1981:2020) {
   
   tbl_requests <- crossing(
